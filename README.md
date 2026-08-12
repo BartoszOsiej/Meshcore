@@ -3,7 +3,7 @@
 **Serverless peer-to-peer chat that runs on static hosting (GitHub Pages).**
 No server, no database, no accounts — just WebTorrent.
 
-**Live: https://bartoszosiej.github.io/N2-Mesh/**
+**Live: https://bartoszosiej.github.io/n2-mesh/**
 
 ## How it works (the torrent principle)
 
