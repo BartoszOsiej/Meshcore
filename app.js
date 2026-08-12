@@ -37,10 +37,28 @@ const EXT = 'N2';
 const RETRY_MS = 600;
 /* BroadcastChannel name — local bridge between tabs of the same browser. */
 const CHANNEL = 'n2mesh';
-/* ICE servers for WebRTC (STUN only — free, no credentials). */
+/* ICE servers for WebRTC.
+ * STUN alone is NOT enough on mobile carrier networks: operators use
+ * CGNAT and often drop peer-to-peer hole-punching, so the browser must
+ * fall back to a TURN relay. We list several STUN + TURN candidates;
+ * the browser probes all of them and picks whichever actually works.
+ * TURN over TCP/TLS on ports 80/443 usually passes even the most
+ * restrictive mobile firewalls. Credentials below are the public
+ * openrelay.metered.ca test credentials (free community relay).
+ */
 const ICE_SERVERS = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
   { urls: ['stun:global.stun.twilio.com:3478'] },
+  {
+    urls: [
+      'turn:openrelay.metered.ca:80',
+      'turn:openrelay.metered.ca:80?transport=tcp',
+      'turns:openrelay.metered.ca:443?transport=tcp',
+      'turns:openrelay.metered.ca:443?transport=udp',
+    ],
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
 ];
 
 const $ = (id) => document.getElementById(id);
