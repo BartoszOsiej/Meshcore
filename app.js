@@ -118,6 +118,27 @@ function addSystem(text) {
 
 /* ── Networking (WebTorrent swarm) ────────────────────────── */
 
+/* webtorrent.min.js is an ES module (export default), so a plain <script>
+ * tag never creates a window.WebTorrent global. Load it with a dynamic
+ * import() instead — works from a classic script in every modern browser. */
+let WebTorrentCtor = null;
+let wtLoading = null;
+async function loadWebTorrent() {
+  if (WebTorrentCtor) return WebTorrentCtor;
+  if (!wtLoading) {
+    wtLoading = import('./webtorrent.min.js')
+      .then((mod) => {
+        WebTorrentCtor = mod.default || mod;
+        return WebTorrentCtor;
+      })
+      .catch((err) => {
+        wtLoading = null;
+        throw err;
+      });
+  }
+  return wtLoading;
+}
+
 /**
  * The custom extended-protocol extension. Must be registered via
  * wire.use() on every wire so it is advertised in the extended handshake
@@ -205,8 +226,9 @@ function updatePeers() {
   }
 }
 
-function initClient() {
-  if (typeof WebTorrent === 'undefined') {
+async function initClient() {
+  const WebTorrent = await loadWebTorrent().catch(() => null);
+  if (!WebTorrent) {
     setStatus('WebTorrent failed to load (offline?)', 'error');
     addSystem('Could not load the WebTorrent library. Check your connection and reload.');
     return;
