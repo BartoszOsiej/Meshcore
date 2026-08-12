@@ -10,6 +10,16 @@
  *     messages literally travel on torrent peer connections.
  *
  * Only signaling passes through the tracker; message payloads never do.
+ *
+ * Fixes that make this actually work:
+ *  - The custom "N2" extension MUST be registered on every wire via
+ *    wire.use() BEFORE the extended handshake is exchanged. Without that,
+ *    wire.extended('N2', ...) throws "Unrecognized extension: N2" and no
+ *    message ever leaves the tab.
+ *  - Same-browser tabs cannot connect to each other over WebRTC (browsers
+ *    block loopback WebRTC), so a BroadcastChannel fallback bridges tabs
+ *    of the same browser locally. Different browsers/devices still talk
+ *    through the WebTorrent swarm.
  */
 'use strict';
 
@@ -25,6 +35,13 @@ const ROOM_PREFIX = 'N2MESH-ROOM:v1:';
 const EXT = 'N2';
 /* Retry interval for messages waiting on the extended handshake. */
 const RETRY_MS = 600;
+/* BroadcastChannel name — local bridge between tabs of the same browser. */
+const CHANNEL = 'n2mesh';
+/* ICE servers for WebRTC (STUN only — free, no credentials). */
+const ICE_SERVERS = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  { urls: ['stun:global.stun.twilio.com:3478'] },
+];
 
 const $ = (id) => document.getElementById(id);
 
@@ -32,6 +49,8 @@ const state = {
   client: null,
   torrent: null,
   peers: new Set(),
+  local: new Set(), // BroadcastChannel peers (same browser)
+  channel: null,
   room: (location.hash.replace(/^#\/?/, '') || 'lobby').toLowerCase().slice(0, 48),
   nick: localStorage.getItem('n2mesh:nick') || '',
   /* Increments on every room switch; stale async callbacks bail on mismatch. */
@@ -97,13 +116,20 @@ function addSystem(text) {
   chat.scrollTop = chat.scrollHeight;
 }
 
-/* ── Networking ───────────────────────────────────────────── */
-function updatePeers() {
-  setPeers(state.peers.size);
-  if (state.peers.size > 0) {
-    setStatus(`connected · room #${state.room}`, 'ok');
-  }
+/* ── Networking (WebTorrent swarm) ────────────────────────── */
+
+/**
+ * The custom extended-protocol extension. Must be registered via
+ * wire.use() on every wire so it is advertised in the extended handshake
+ * (the handshake's `m` map is built from registered extensions). Without
+ * registration, wire.extended('N2', ...) throws and messages never send.
+ */
+function N2MeshExtension(wire) {
+  this._wire = wire;
 }
+N2MeshExtension.prototype.name = EXT;
+N2MeshExtension.prototype.onExtendedHandshake = function () {};
+N2MeshExtension.prototype.onMessage = function () {};
 
 /** Try to send a payload on one wire; false if the extended handshake is
  *  not ready yet (bittorrent-protocol has no ID mapping for our extension). */
@@ -129,6 +155,56 @@ function flushQueue(wire) {
   }
 }
 
+/** Handle an incoming chat payload (from any transport). */
+function handlePayload(data) {
+  let parsed;
+  try {
+    parsed = JSON.parse(typeof data === 'string' ? data : fromBytes(data));
+  } catch (_) {
+    return;
+  }
+  if (parsed && typeof parsed.t === 'string') {
+    addMessage(String(parsed.u || '?'), parsed.t, parsed.ts || Date.now(), false);
+  }
+}
+
+/* BroadcastChannel bridge — tabs of the SAME browser can't do WebRTC
+ * loopback, so they relay through a same-origin channel. This makes the
+ * chat work out of the box when testing in two tabs. */
+function initChannel() {
+  try {
+    state.channel = new BroadcastChannel(CHANNEL);
+  } catch (_) {
+    return; // not supported — WebTorrent swarm only
+  }
+  state.channel.onmessage = (ev) => {
+    if (!ev.data || ev.data.room !== state.room) return;
+    if (ev.data.type === 'hello') {
+      // A new same-browser peer appeared — greet it back.
+      const uid = ev.data.uid;
+      if (uid !== state.localUid) {
+        state.local.add(uid);
+        updatePeers();
+        state.channel.postMessage({
+          type: 'hello', room: state.room, uid: state.localUid,
+        });
+        addSystem('Same-browser peer connected (local bridge).');
+      }
+      return;
+    }
+    if (ev.data.type === 'msg') handlePayload(ev.data.payload);
+  };
+  state.localUid = Math.random().toString(36).slice(2, 10);
+  state.channel.postMessage({ type: 'hello', room: state.room, uid: state.localUid });
+}
+
+function updatePeers() {
+  setPeers(state.peers.size + state.local.size);
+  if (state.peers.size > 0 || state.local.size > 0) {
+    setStatus(`connected · room #${state.room}`, 'ok');
+  }
+}
+
 function initClient() {
   if (typeof WebTorrent === 'undefined') {
     setStatus('WebTorrent failed to load (offline?)', 'error');
@@ -138,7 +214,7 @@ function initClient() {
 
   const session = ++state.session;
   setStatus('joining swarm…', 'busy');
-  state.client = new WebTorrent({ tracker: { announce: TRACKERS } });
+  state.client = new WebTorrent({ tracker: { announce: TRACKERS }, rtcConfig: { iceServers: ICE_SERVERS } });
   state.client.on('error', (err) => {
     console.error('[n2mesh] client error', err);
     setStatus('client error — see console', 'error');
@@ -156,19 +232,16 @@ function initClient() {
 
     torrent.on('wire', (wire) => {
       if (session !== state.session) return;
+      /* CRITICAL: register our extension BEFORE the extended handshake is
+       * exchanged so it lands in the handshake's `m` map. Without this,
+       * wire.extended('N2', ...) throws "Unrecognized extension: N2". */
+      wire.use(N2MeshExtension);
+
       /* Extended-protocol chat channel: receiving also proves the handshake
        * completed, so flush anything queued for this wire. */
       wire.on('extended', (ext, data) => {
         if (ext === EXT) {
-          let parsed;
-          try {
-            parsed = JSON.parse(fromBytes(data));
-          } catch (_) {
-            return;
-          }
-          if (parsed && typeof parsed.t === 'string') {
-            addMessage(String(parsed.u || '?'), parsed.t, parsed.ts || Date.now(), false);
-          }
+          handlePayload(data);
         }
         flushQueue(wire);
       });
@@ -203,12 +276,19 @@ function sendMessage(text) {
   const msg = text.trim();
   if (!msg) return;
   const nick = currentNick();
-  if (state.peers.size === 0) {
-    addSystem('No peers connected yet — messages are P2P, so they cannot be delivered. Share the room link.');
+  const payload = JSON.stringify({ u: nick, t: msg, ts: Date.now() });
+
+  if (state.peers.size > 0) {
+    const bytes = toBytes(payload);
+    for (const wire of state.peers) {
+      if (!trySend(wire, bytes)) queueSend(wire, bytes);
+    }
   }
-  const payload = toBytes(JSON.stringify({ u: nick, t: msg, ts: Date.now() }));
-  for (const wire of state.peers) {
-    if (!trySend(wire, payload)) queueSend(wire, payload);
+  if (state.local.size > 0 && state.channel) {
+    state.channel.postMessage({ type: 'msg', room: state.room, payload });
+  }
+  if (state.peers.size === 0 && state.local.size === 0) {
+    addSystem('No peers connected yet — messages are P2P, so they cannot be delivered. Share the room link.');
   }
   addMessage(nick, msg, Date.now(), true);
 }
@@ -223,6 +303,7 @@ function joinRoom(room) {
   /* Invalidate everything async from the old room. */
   state.session++;
   state.peers.clear();
+  state.local.clear();
   setPeers(0);
   state.torrent = null;
   if (state.client) state.client.destroy(() => {});
@@ -237,6 +318,8 @@ function boot() {
   }
   $('nickInput').value = state.nick;
   $('roomInput').value = state.room;
+
+  initChannel();
 
   $('sendBtn').addEventListener('click', () => {
     sendMessage($('msgInput').value);
