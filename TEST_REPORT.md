@@ -9,7 +9,7 @@
 
 ## Whole project
 
-**✅ 19/19 unit tests pass** (`tests/core.test.js`, `node:test`) · syntax
+**✅ 22/22 unit tests pass** (`tests/core.test.js`, `node:test`) · syntax
 checks clean for `app.js` + `core.js`.
 
 The pure logic was extracted from `app.js` into `core.js` (bytes, message
