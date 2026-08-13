@@ -89,7 +89,7 @@ const state = {
   peers: new Set(),
   local: new Set(), // BroadcastChannel peers (same browser)
   channel: null,
-  room: (location.hash.replace(/^#\/?/, '') || 'lobby').toLowerCase().slice(0, 48),
+  room: NV2MeshCore.parseRoom(location.hash),
   nick: localStorage.getItem('n2mesh:nick') || '',
   /* Increments on every room switch; stale async callbacks bail on mismatch. */
   session: 0,
@@ -99,37 +99,12 @@ const state = {
   seen: new Map(),
 };
 
-/* ── Tiny helpers ─────────────────────────────────────────── */
-function toBytes(str) {
-  if (typeof Buffer !== 'undefined') return Buffer.from(str, 'utf8');
-  return new TextEncoder().encode(str);
-}
-function fromBytes(data) {
-  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-  return new TextDecoder().decode(bytes);
-}
-function nickColor(name) {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  return `hsl(${h % 360} 70% 62%)`;
-}
+/* ── Tiny helpers ───────────────────────────────────────────
+ * Pure logic (bytes, ids, dedup, MQTT packets, room parsing) lives in
+ * core.js so it can be unit-tested headlessly — see tests/core.test.js. */
+const C = NV2MeshCore;
 function fmtTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-function newMid() {
-  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
-}
-/* Dedup: returns true if the id is new (should be displayed). */
-function isNewMid(mid) {
-  if (!mid) return true;
-  const now = Date.now();
-  for (const [k, t] of state.seen) {
-    if (now - t > 30000) state.seen.delete(k);
-  }
-  if (state.seen.has(mid)) return false;
-  if (state.seen.size > 500) state.seen.clear();
-  state.seen.set(mid, now);
-  return true;
 }
 
 /* ── UI ───────────────────────────────────────────────────── */
@@ -152,7 +127,7 @@ function addMessage(nick, text, ts, self) {
   const n = document.createElement('span');
   n.className = 'nick';
   n.textContent = self ? 'you' : nick;
-  n.style.color = self ? '#7dd3fc' : nickColor(nick);
+  n.style.color = self ? '#7dd3fc' : C.nickColor(nick);
   const t = document.createElement('span');
   t.className = 'time';
   t.textContent = fmtTime(ts);
@@ -191,57 +166,10 @@ function refreshStatus() {
  * published to RELAY_TOPIC + room; each tab subscribes only to its own
  * room topic (rooms are isolated — no cross-room traffic). Works from
  * any static page on any network. */
-function mqttEncode(type, body) {
-  const b = toBytes(body);
-  let len = b.length;
-  const rem = [];
-  do {
-    let d = len % 128;
-    len = Math.floor(len / 128);
-    if (len > 0) d |= 0x80;
-    rem.push(d);
-  } while (len > 0);
-  return Uint8Array.from([type, ...rem, ...b]);
-}
-function mqttConnectPkt(clientId) {
-  const cid = toBytes(clientId);
-  /* protocol name "MQTT", level 4, clean session, keepalive 60 */
-  const vh = [0x00, 0x04, 0x4d, 0x51, 0x54, 0x54, 0x04, 0x02, 0x00, 0x3c];
-  const pl = [0x00, cid.length, ...cid];
-  return mqttEncode(0x10, [...vh, ...pl]);
-}
-function mqttSubPkt(topic) {
-  const t = toBytes(topic);
-  return mqttEncode(0x82, [0x00, 0x01, 0x00, t.length, ...t, 0x00]); // qos 0
-}
-function mqttPubPkt(topic, payload) {
-  const t = toBytes(topic);
-  return mqttEncode(0x30, [0x00, t.length, ...t, ...payload]);
-}
-function mqttPingPkt() {
-  return Uint8Array.from([0xc0, 0x00]);
-}
-function mqttUnsubPkt(topic) {
-  const t = toBytes(topic);
-  return mqttEncode(0xa2, [0x00, 0x01, 0x00, t.length, ...t]);
-}
-function mqttParsePublish(d) {
-  /* skip fixed header (assume 2-byte remaining length or less) */
-  let i = 1;
-  while (i < d.length && d[i] & 0x80) i++;
-  i++;
-  const tlen = (d[i] << 8) | d[i + 1];
-  i += 2;
-  const topic = new TextDecoder().decode(d.slice(i, i + tlen));
-  i += tlen;
-  if (d[0] & 0x08) i += 2; // packet id (QoS > 0)
-  return { topic, payload: d.slice(i) };
-}
-
 function relaySubscribe() {
   const ws = state.relay.ws;
   if (!ws || ws.readyState !== 1) return;
-  try { ws.send(mqttSubPkt(RELAY_TOPIC + state.room)); } catch (_) {}
+  try { ws.send(C.mqttSubPkt(RELAY_TOPIC + state.room)); } catch (_) {}
 }
 function relayConnect() {
   if (!state.relay || state.relay.connected) return;
@@ -256,7 +184,7 @@ function relayConnect() {
   state.relay.ws = ws;
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
-    ws.send(mqttConnectPkt('n2-' + Math.random().toString(36).slice(2, 10)));
+    ws.send(C.mqttConnectPkt('n2-' + Math.random().toString(36).slice(2, 10)));
   };
   ws.onmessage = (ev) => {
     const d = new Uint8Array(ev.data);
@@ -281,7 +209,7 @@ function relayConnect() {
       refreshStatus();
       addSystem('Relay connected — chat works on any network.');
     } else if (type === 0x3) { // PUBLISH
-      const m = mqttParsePublish(d);
+      const m = C.mqttParsePublish(d);
       if (m.topic === RELAY_TOPIC + state.room) {
         handlePayload(m.payload);
       }
@@ -304,7 +232,7 @@ function relayConnect() {
   /* keepalive every 30s (broker keepalive is 60s) */
   const ping = setInterval(() => {
     if (ws.readyState === 1) {
-      try { ws.send(mqttPingPkt()); } catch (_) {}
+      try { ws.send(C.mqttPingPkt()); } catch (_) {}
     }
   }, 30000);
   ws.addEventListener('close', () => clearInterval(ping));
@@ -320,7 +248,7 @@ function relayRetry() {
 function relayPublish(payload, room) {
   room = room || state.room;
   if (state.relay.connected && state.relay.ws && state.relay.ws.readyState === 1) {
-    try { state.relay.ws.send(mqttPubPkt(RELAY_TOPIC + room, payload)); } catch (_) {}
+    try { state.relay.ws.send(C.mqttPubPkt(RELAY_TOPIC + room, payload)); } catch (_) {}
   } else {
     state.relay.queue.push({ payload, room });
     if (state.relay.queue.length > 100) state.relay.queue.shift();
@@ -467,7 +395,7 @@ function teardown(remotePid, entry) {
 function handlePayload(data) {
   let parsed;
   try {
-    parsed = JSON.parse(typeof data === 'string' ? data : fromBytes(data));
+    parsed = JSON.parse(typeof data === 'string' ? data : C.fromBytes(data));
   } catch (_) {
     return;
   }
@@ -481,7 +409,7 @@ function handlePayload(data) {
     return;
   }
   if (typeof parsed.t === 'string') {
-    if (!isNewMid(parsed.mid)) return; // already seen via another path
+    if (!C.isNewMid(state.seen, parsed.mid, 30000, 500)) return; // already seen via another path
     addMessage(String(parsed.u || '?'), parsed.t, parsed.ts || Date.now(), false);
   }
 }
@@ -538,7 +466,7 @@ function sendMessage(text) {
   const msg = text.trim();
   if (!msg) return;
   const nick = currentNick();
-  const payload = JSON.stringify({ u: nick, t: msg, ts: Date.now(), mid: newMid() });
+  const payload = JSON.stringify({ u: nick, t: msg, ts: Date.now(), mid: C.newMid() });
 
   /* P2P — messages travel on WebRTC data channels when possible. */
   if (state.peers.size > 0) {
@@ -579,7 +507,7 @@ function joinRoom(room) {
   setPeers(0);
   /* Move the relay subscription: drop the old room, pick up the new one. */
   if (state.relay.ws && state.relay.ws.readyState === 1) {
-    try { state.relay.ws.send(mqttUnsubPkt(RELAY_TOPIC + oldRoom)); } catch (_) {}
+    try { state.relay.ws.send(C.mqttUnsubPkt(RELAY_TOPIC + oldRoom)); } catch (_) {}
   }
   relaySubscribe();
   /* Announce ourselves in the new room right away. */
