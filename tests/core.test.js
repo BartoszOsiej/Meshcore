@@ -140,3 +140,22 @@ test('mqttUnsubPkt structure', () => {
   const pkt = Array.from(C.mqttUnsubPkt('n2mesh/old'));
   assert.strictEqual(pkt[0], 0xa2); // UNSUBSCRIBE, flags 2
 });
+
+test('mqttEncode handles empty body', () => {
+  assert.deepStrictEqual(Array.from(C.mqttEncode(0xd0, [])), [0xd0, 0x00]);
+});
+
+test('mqttPubPkt round-trips a room-sized payload', () => {
+  const topic = 'n2mesh/some-long-room-name-here';
+  const payload = C.toBytes(JSON.stringify({ u: 'x', t: 'y', ts: 2, mid: 'm-2' }));
+  const parsed = C.mqttParsePublish(C.mqttPubPkt(topic, payload));
+  assert.strictEqual(parsed.topic, topic);
+  const obj = JSON.parse(C.fromBytes(parsed.payload));
+  assert.strictEqual(obj.mid, 'm-2');
+});
+
+test('parseRoom strips the leading slash and keeps inner ones', () => {
+  assert.strictEqual(C.parseRoom('#/a/b'), 'a/b');
+  assert.strictEqual(C.parseRoom('a/b'), 'a/b');
+  assert.strictEqual(C.parseRoom('#/'), 'lobby');
+});
