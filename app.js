@@ -1,51 +1,42 @@
-/* N2 Mesh — serverless P2P chat on the torrent principle.
+/* N2 Mesh — serverless P2P chat.
  *
  * How it works:
- *  1. Every peer in a room seeds the SAME tiny blob. Identical content →
- *     identical infohash → they all join the same WebTorrent swarm.
- *  2. A public WebSocket tracker performs WebRTC signaling between swarm
- *     members (the same way torrents find peers). No chat server anywhere.
- *  3. Once two peers are connected, chat messages ride the established
- *     connection as BitTorrent *extended protocol* messages — i.e. the
- *     messages literally travel on torrent peer connections.
+ *  1. Every peer in a room subscribes to a per-room topic on a public MQTT
+ *     broker (WSS). The broker is used ONLY for signaling and as a message
+ *     fallback — there is no chat server anywhere.
+ *  2. On join, each peer announces its presence on the room topic. When two
+ *     peers see each other, they exchange WebRTC offer/answer/ICE candidates
+ *     through the same topic (the classic "signaling server" pattern used by
+ *     PeerJS & co.), then open a WebRTC data channel directly between them.
+ *  3. Once two peers are connected, chat messages travel over the WebRTC
+ *     data channel — real P2P, payloads never touch any server.
  *
- * Only signaling passes through the tracker; message payloads never do.
+ * Why this design (and why WebTorrent trackers were dropped):
+ *  - The public WebTorrent WebSocket trackers (tracker.webtorrent.dev,
+ *    tracker.openwebtorrent.com) accept announces and see the swarm, but they
+ *    no longer relay WebRTC offers between peers — verified live: peers were
+ *    registered (complete=2) yet zero offers ever came back. The browser
+ *    build of WebTorrent can only use WebSocket trackers (no UDP/DHT in the
+ *    browser), so peers could never find each other and P2P was dead.
+ *  - Signaling over the MQTT relay keeps the app fully serverless (GitHub
+ *    Pages friendly), works today, and matches how real messengers do it.
+ *  - Pure browser WebRTC still cannot punch through mobile carrier CGNAT,
+ *    so every message is ALSO published to the room topic as a fallback.
+ *    Recipients deduplicate by message id, so P2P peers get messages over
+ *    the data channel while devices that cannot connect directly still
+ *    exchange messages through the relay. P2P first, relay as fallback.
  *
- * Why there is also a relay (and why the chat works everywhere):
- *  - Pure browser P2P (WebRTC) cannot connect on mobile carrier networks:
- *    operators use CGNAT and drop peer-to-peer hole-punching, and the free
- *    public TURN relays that used to bridge that are dead or account-gated.
- *  - So every message is ALSO published to a per-room topic on a public
- *    MQTT broker (WSS). Recipients deduplicate by message id, so P2P peers
- *    still get messages directly over the torrent connection while devices
- *    that cannot reach each other directly still exchange messages through
- *    the relay. P2P first, relay as automatic fallback — the same pattern
- *    real messengers use.
- *
- * Fixes that make this actually work:
- *  - The custom "N2" extension MUST be registered on every wire via
- *    wire.use() BEFORE the extended handshake is exchanged. Without that,
- *    wire.extended('N2', ...) throws "Unrecognized extension: N2" and no
- *    message ever leaves the tab.
- *  - Same-browser tabs cannot connect to each other over WebRTC (browsers
- *    block loopback WebRTC), so a BroadcastChannel fallback bridges tabs
- *    of the same browser locally. Different browsers/devices still talk
- *    through the WebTorrent swarm and/or the relay.
- *  - webtorrent.min.js is an ES module (export default), so it is loaded
- *    with a dynamic import() — a plain <script> tag never creates the
- *    window.WebTorrent global.
+ * Notes:
+ *  - Same-browser tabs cannot WebRTC-connect to each other (browsers block
+ *    loopback WebRTC), so a BroadcastChannel bridge connects local tabs.
+ *  - Two peers may both see each other's presence at once. To avoid the
+ *    "glare" race, the peer with the lexicographically smaller id sends the
+ *    offer; the other side waits for it.
  */
+
 'use strict';
 
-/* Public WebSocket trackers (verified live; fallbacks in case one is down). */
-const TRACKERS = [
-  'wss://tracker.webtorrent.dev',
-  'wss://tracker.openwebtorrent.com',
-  'wss://open.ftorrent.com:443',
-];
-
-/* Public MQTT brokers over WSS — the relay fallback for networks where
- * WebRTC cannot connect (mobile CGNAT). Both are free, public, no account.
+/* Public MQTT brokers over WSS — the signaling channel + message fallback.
  * broker.hivemq.com verified working; broker.emqx.io is the backup. */
 const RELAY_BROKERS = [
   'wss://broker.hivemq.com:8884/mqtt',
@@ -53,14 +44,10 @@ const RELAY_BROKERS = [
 ];
 const RELAY_TOPIC = 'n2mesh/'; // + room name
 
-/* Room content prefix — changing this breaks all existing rooms. */
-const ROOM_PREFIX = 'N2MESH-ROOM:v1:';
-/* Custom BitTorrent extended-protocol extension name (short, per spec). */
-const EXT = 'N2';
-/* Retry interval for messages waiting on the extended handshake. */
-const RETRY_MS = 600;
-/* BroadcastChannel name — local bridge between tabs of the same browser. */
-const CHANNEL = 'n2mesh';
+/* Presence / signaling sent to the room topic (JSON). */
+const MSG_PRESENCE = 'presence';
+const MSG_SIGNAL = 'signal';
+
 /* ICE servers for WebRTC. The browser probes all of them and picks
  * whichever works; on networks where none do, the relay takes over. */
 const ICE_SERVERS = [
@@ -86,11 +73,19 @@ const ICE_SERVERS = [
   },
 ];
 
+/* BroadcastChannel name — local bridge between tabs of the same browser. */
+const CHANNEL = 'n2mesh';
+/* Presence re-announce interval — new peers discover you within one tick. */
+const PRESENCE_MS = 5000;
+
 const $ = (id) => document.getElementById(id);
 
 const state = {
-  client: null,
-  torrent: null,
+  /* Per-session peer id — used for glare-free offer selection. */
+  pid: Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 6),
+  /* pid -> { pc, dc } — active WebRTC connections. */
+  pcs: new Map(),
+  /* Open data channels (also counted as "peers"). */
   peers: new Set(),
   local: new Set(), // BroadcastChannel peers (same browser)
   channel: null,
@@ -99,7 +94,7 @@ const state = {
   /* Increments on every room switch; stale async callbacks bail on mismatch. */
   session: 0,
   /* Relay (MQTT) state. */
-  relay: { ws: null, connected: false, brokerIdx: 0, retry: 0, queue: [] },
+  relay: { ws: null, connected: false, brokerIdx: 0, retry: 0, queue: [], presenceTimer: null },
   /* Message ids already seen — dedup across P2P / relay / BroadcastChannel. */
   seen: new Map(),
 };
@@ -278,6 +273,11 @@ function relayConnect() {
       const q = state.relay.queue;
       state.relay.queue = [];
       for (const item of q) relayPublish(item.payload, item.room);
+      /* Announce our presence so other peers in this room can dial us. */
+      publishPresence();
+      if (!state.relay.presenceTimer) {
+        state.relay.presenceTimer = setInterval(publishPresence, PRESENCE_MS);
+      }
       refreshStatus();
       addSystem('Relay connected — chat works on any network.');
     } else if (type === 0x3) { // PUBLISH
@@ -327,67 +327,143 @@ function relayPublish(payload, room) {
   }
 }
 
-/* ── Networking (WebTorrent swarm) ────────────────────────── */
+/* ── P2P (WebRTC over relay signaling) ────────────────────── */
 
-/* webtorrent.min.js is an ES module (export default), so a plain <script>
- * tag never creates a window.WebTorrent global. Load it with a dynamic
- * import() instead — works from a classic script in every modern browser. */
-let WebTorrentCtor = null;
-let wtLoading = null;
-async function loadWebTorrent() {
-  if (WebTorrentCtor) return WebTorrentCtor;
-  if (!wtLoading) {
-    wtLoading = import('./webtorrent.min.js')
-      .then((mod) => {
-        WebTorrentCtor = mod.default || mod;
-        return WebTorrentCtor;
-      })
-      .catch((err) => {
-        wtLoading = null;
-        throw err;
-      });
-  }
-  return wtLoading;
+/** Announce our presence on the room topic (JSON string). */
+function publishPresence() {
+  relayPublish(JSON.stringify({
+    type: MSG_PRESENCE,
+    pid: state.pid,
+    nick: currentNick(),
+    ts: Date.now(),
+  }));
 }
 
-/**
- * The custom extended-protocol extension. Must be registered via
- * wire.use() on every wire so it is advertised in the extended handshake
- * (the handshake's `m` map is built from registered extensions). Without
- * registration, wire.extended('N2', ...) throws and messages never send.
- */
-function N2MeshExtension(wire) {
-  this._wire = wire;
+/** Send a signaling message addressed to a specific peer. */
+function sendSignal(to, data) {
+  relayPublish(JSON.stringify({
+    type: MSG_SIGNAL,
+    from: state.pid,
+    to: to,
+    data: data,
+  }));
 }
-N2MeshExtension.prototype.name = EXT;
-N2MeshExtension.prototype.onExtendedHandshake = function () {};
-N2MeshExtension.prototype.onMessage = function () {};
 
-/** Try to send a payload on one wire; false if the extended handshake is
- *  not ready yet (bittorrent-protocol has no ID mapping for our extension). */
-function trySend(wire, payload) {
-  try {
-    wire.extended(EXT, payload);
-    return true;
-  } catch (_) {
-    return false;
+/** Handle an incoming presence announcement from another peer. */
+function onPresence(p) {
+  if (!p || !p.pid || p.pid === state.pid) return;
+  if (state.pcs.has(p.pid)) return; // already connecting/connected
+  /* Glare avoidance: the lexicographically smaller peer id sends the offer,
+   * the larger one waits for it. Only one side ever dials. */
+  if (state.pid < p.pid) {
+    dial(p.pid);
   }
 }
 
-/** Queue a payload per wire until its extended handshake is negotiated. */
-function queueSend(wire, payload) {
-  wire.__n2pending = wire.__n2pending || [];
-  wire.__n2pending.push(payload);
+/** Initiate a WebRTC connection to another peer (offerer side). */
+function dial(remotePid) {
+  if (state.pcs.has(remotePid)) return;
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const entry = { pc, dc: null };
+  state.pcs.set(remotePid, entry);
+
+  const dc = pc.createDataChannel('n2');
+  entry.dc = dc;
+  setupDataChannel(remotePid, entry, dc);
+
+  pc.onicecandidate = (ev) => {
+    if (ev.candidate) sendSignal(remotePid, { candidate: ev.candidate.toJSON ? ev.candidate.toJSON() : ev.candidate });
+  };
+  pc.oniceconnectionstatechange = () => {
+    if (['failed', 'disconnected', 'closed'].includes(pc.iceConnectionState)) {
+      teardown(remotePid, entry);
+    }
+  };
+
+  pc.createOffer()
+    .then((offer) => pc.setLocalDescription(offer))
+    .then(() => sendSignal(remotePid, { sdp: pc.localDescription }))
+    .catch(() => teardown(remotePid, entry));
 }
-function flushQueue(wire) {
-  const q = wire.__n2pending || [];
-  wire.__n2pending = [];
-  for (const p of q) {
-    if (!trySend(wire, p)) queueSend(wire, p); // still not ready — requeue
+
+/** Handle an incoming signaling message (offer / answer / candidate). */
+function onSignal(sig) {
+  if (!sig || sig.to !== state.pid) return;
+  const data = sig.data || {};
+  const remotePid = sig.from;
+
+  if (data.sdp) {
+    if (data.sdp.type === 'offer') {
+      /* Answerer side. If we somehow already have a pc (glare edge case),
+       * discard ours — the incoming offer wins. */
+      if (state.pcs.has(remotePid)) teardown(remotePid, state.pcs.get(remotePid));
+      const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+      const entry = { pc, dc: null };
+      state.pcs.set(remotePid, entry);
+
+      pc.ondatachannel = (ev) => {
+        entry.dc = ev.channel;
+        setupDataChannel(remotePid, entry, ev.channel);
+      };
+      pc.onicecandidate = (ev) => {
+        if (ev.candidate) sendSignal(remotePid, { candidate: ev.candidate.toJSON ? ev.candidate.toJSON() : ev.candidate });
+      };
+      pc.oniceconnectionstatechange = () => {
+        if (['failed', 'disconnected', 'closed'].includes(pc.iceConnectionState)) {
+          teardown(remotePid, entry);
+        }
+      };
+
+      pc.setRemoteDescription(data.sdp)
+        .then(() => pc.createAnswer())
+        .then((answer) => pc.setLocalDescription(answer))
+        .then(() => sendSignal(remotePid, { sdp: pc.localDescription }))
+        .catch(() => teardown(remotePid, entry));
+    } else if (data.sdp.type === 'answer') {
+      const entry = state.pcs.get(remotePid);
+      if (entry && entry.pc && entry.pc.signalingState === 'have-local-offer') {
+        entry.pc.setRemoteDescription(data.sdp).catch(() => teardown(remotePid, entry));
+      }
+    }
+  } else if (data.candidate) {
+    const entry = state.pcs.get(remotePid);
+    if (entry && entry.pc && entry.pc.remoteDescription) {
+      entry.pc.addIceCandidate(data.candidate).catch(() => {});
+    }
   }
 }
 
-/** Handle an incoming chat payload (from any transport). */
+/** Wire up a data channel: messages in, peer counting, cleanup. */
+function setupDataChannel(remotePid, entry, dc) {
+  dc.onmessage = (ev) => {
+    handlePayload(ev.data);
+  };
+  dc.onopen = () => {
+    if (!state.peers.has(dc)) {
+      state.peers.add(dc);
+      updatePeers();
+      addSystem('A peer connected — you are now talking P2P.');
+    }
+  };
+  dc.onclose = () => {
+    state.peers.delete(dc);
+    state.pcs.delete(remotePid);
+    updatePeers();
+  };
+}
+
+/** Close and forget a connection (on failure or room switch). */
+function teardown(remotePid, entry) {
+  if (!entry) return;
+  if (state.pcs.get(remotePid) === entry) state.pcs.delete(remotePid);
+  if (entry.dc && state.peers.has(entry.dc)) {
+    state.peers.delete(entry.dc);
+    updatePeers();
+  }
+  try { entry.pc.close(); } catch (_) {}
+}
+
+/** Handle an incoming payload (chat, presence or signal) from any transport. */
 function handlePayload(data) {
   let parsed;
   try {
@@ -395,7 +471,16 @@ function handlePayload(data) {
   } catch (_) {
     return;
   }
-  if (parsed && typeof parsed.t === 'string') {
+  if (!parsed || typeof parsed !== 'object') return;
+  if (parsed.type === MSG_PRESENCE) {
+    onPresence(parsed);
+    return;
+  }
+  if (parsed.type === MSG_SIGNAL) {
+    onSignal(parsed);
+    return;
+  }
+  if (typeof parsed.t === 'string') {
     if (!isNewMid(parsed.mid)) return; // already seen via another path
     addMessage(String(parsed.u || '?'), parsed.t, parsed.ts || Date.now(), false);
   }
@@ -408,14 +493,15 @@ function initChannel() {
   try {
     state.channel = new BroadcastChannel(CHANNEL);
   } catch (_) {
-    return; // not supported — WebTorrent swarm only
+    return; // not supported — P2P/relay only
   }
   state.channel.onmessage = (ev) => {
     if (!ev.data || ev.data.room !== state.room) return;
     if (ev.data.type === 'hello') {
-      // A new same-browser peer appeared — greet it back.
+      // A new same-browser peer appeared — greet it back (only once per peer,
+      // otherwise tabs reply to each other's hellos forever).
       const uid = ev.data.uid;
-      if (uid !== state.localUid) {
+      if (uid !== state.localUid && !state.local.has(uid)) {
         state.local.add(uid);
         updatePeers();
         state.channel.postMessage({
@@ -436,67 +522,12 @@ function updatePeers() {
   refreshStatus();
 }
 
-async function initClient() {
-  const WebTorrent = await loadWebTorrent().catch(() => null);
-  if (!WebTorrent) {
-    /* Even without WebTorrent the relay still works — chat is usable. */
-    addSystem('P2P library unavailable — running in relay-only mode.');
-    refreshStatus();
-    return;
-  }
-
-  const session = ++state.session;
-  setStatus('joining swarm…', 'busy');
-  state.client = new WebTorrent({ tracker: { announce: TRACKERS }, rtcConfig: { iceServers: ICE_SERVERS } });
-  state.client.on('error', (err) => {
-    console.error('[n2mesh] client error', err);
-  });
-  state.client.on('warning', (err) => {
-    console.warn('[n2mesh] warning', err);
-  });
-
-  const content = new Blob([ROOM_PREFIX + state.room]);
-  state.client.seed(content, { name: `n2mesh-${state.room}.txt`, announce: TRACKERS }, (torrent) => {
-    if (session !== state.session) return; // stale — user switched rooms
-    state.torrent = torrent;
-    addSystem(`Joined room “${state.room}”. Waiting for P2P peers — sharing the link works even over relay.`);
-
-    torrent.on('wire', (wire) => {
-      if (session !== state.session) return;
-      /* CRITICAL: register our extension BEFORE the extended handshake is
-       * exchanged so it lands in the handshake's `m` map. Without this,
-       * wire.extended('N2', ...) throws "Unrecognized extension: N2". */
-      wire.use(N2MeshExtension);
-
-      /* Extended-protocol chat channel: receiving also proves the handshake
-       * completed, so flush anything queued for this wire. */
-      wire.on('extended', (ext, data) => {
-        if (ext === EXT) {
-          handlePayload(data);
-        }
-        flushQueue(wire);
-      });
-      state.peers.add(wire);
-      updatePeers();
-      wire.on('close', () => {
-        state.peers.delete(wire);
-        updatePeers();
-      });
-      addSystem('A peer connected — you are now talking P2P.');
-    });
-
-    torrent.on('noPeers', () => {
-      if (session === state.session) refreshStatus();
-    });
-  });
+function initClient() {
+  /* P2P needs no library — WebRTC is native. Presence announcements over the
+   * relay are what let peers discover and dial each other. */
+  addSystem(`Joined room “${state.room}”. Waiting for P2P peers — sharing the link works even over relay.`);
+  refreshStatus();
 }
-
-/** Periodic retry for messages still waiting on the extended handshake. */
-setInterval(() => {
-  for (const wire of state.peers) {
-    if (wire.__n2pending && wire.__n2pending.length) flushQueue(wire);
-  }
-}, RETRY_MS);
 
 function currentNick() {
   const v = $('nickInput').value.trim().slice(0, 24);
@@ -509,11 +540,10 @@ function sendMessage(text) {
   const nick = currentNick();
   const payload = JSON.stringify({ u: nick, t: msg, ts: Date.now(), mid: newMid() });
 
-  /* P2P — messages travel on torrent peer connections when possible. */
+  /* P2P — messages travel on WebRTC data channels when possible. */
   if (state.peers.size > 0) {
-    const bytes = toBytes(payload);
-    for (const wire of state.peers) {
-      if (!trySend(wire, bytes)) queueSend(wire, bytes);
+    for (const dc of state.peers) {
+      try { dc.send(payload); } catch (_) {}
     }
   }
   /* Local tabs (same browser). */
@@ -532,25 +562,29 @@ function sendMessage(text) {
 /* ── Room switching ───────────────────────────────────────── */
 function joinRoom(room) {
   room = (room || 'lobby').toLowerCase().slice(0, 48);
-  if (room === state.room && state.torrent) return;
+  if (room === state.room && state.pcs.size > 0) return;
   const oldRoom = state.room;
   state.room = room;
   location.hash = '/' + room;
   addSystem(`Switching to room “${room}” — reloading swarm…`);
   /* Invalidate everything async from the old room. */
   state.session++;
+  /* Close all WebRTC connections and clear peer state. */
+  for (const entry of state.pcs.values()) {
+    try { entry.pc.close(); } catch (_) {}
+  }
+  state.pcs.clear();
   state.peers.clear();
   state.local.clear();
   setPeers(0);
-  state.torrent = null;
-  if (state.client) state.client.destroy(() => {});
-  state.client = null;
   /* Move the relay subscription: drop the old room, pick up the new one. */
   if (state.relay.ws && state.relay.ws.readyState === 1) {
     try { state.relay.ws.send(mqttUnsubPkt(RELAY_TOPIC + oldRoom)); } catch (_) {}
   }
   relaySubscribe();
-  setTimeout(initClient, 250);
+  /* Announce ourselves in the new room right away. */
+  publishPresence();
+  refreshStatus();
 }
 
 /* ── Boot ─────────────────────────────────────────────────── */
@@ -562,7 +596,7 @@ function boot() {
   $('roomInput').value = state.room;
 
   initChannel();
-  relayConnect(); // relay is independent of WebTorrent — always on
+  relayConnect(); // relay is the signaling channel — always on
 
   $('sendBtn').addEventListener('click', () => {
     sendMessage($('msgInput').value);
