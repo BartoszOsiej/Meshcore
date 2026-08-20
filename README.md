@@ -142,5 +142,3 @@ npm test          # 49/49 ✓
 MIT — do whatever you want with it.
 
 ---
-
-> 🤖 Generated with [Codebuff](https://codebuff.com) · [Portfolio](https://bartoszosiej.github.io/Portfolio/)

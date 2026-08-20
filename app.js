@@ -210,7 +210,7 @@ function relayConnect() {
       addSystem('Relay connected — chat works on any network.');
     } else if (type === 0x3) { // PUBLISH
       const m = C.mqttParsePublish(d);
-      if (m.topic === RELAY_TOPIC + state.room) {
+      if (m && m.topic === RELAY_TOPIC + state.room) {
         handlePayload(m.payload);
       }
     } else if (type === 0xb) { // UNSUBACK — ignore
