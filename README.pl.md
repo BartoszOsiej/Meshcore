@@ -61,7 +61,34 @@ działa dziś i jest wzorcem używanym przez prawdziwe komunikatory.
 |---|---|
 | `index.html` | Powłoka single-page |
 | `app.js` | Sieć (WebRTC + sygnalizacja MQTT) — zero zależności |
+| `core.js` | Warstwa czystej logiki (bajty, id wiadomości, dedup, parsowanie pokoi, kodek pakietów MQTT 3.1.1) — testowalna bez przeglądarki |
 | `style.css` | Ciemny motyw aurora |
+
+## Testy i utwardzanie (sweep NV2.0)
+
+Logika wiadomości mieszka w `core.js`, dzięki czemu można ją testować
+headless. Suita ma **49/49 zielonych** (`npm test`, wbudowany `node:test`
+Node, zero zależności):
+
+- `tests/core.test.js` (22) — funkcjonalne: bajty, id wiadomości, dedup,
+  parsowanie pokoi, round-tripy pakietów MQTT
+- `tests/core.rigorous.test.js` (27) — **rygorystyczne**: testy fuzz i
+  property na deterministycznym PRNG (mulberry32, każdy przebieg
+  odtwarzalny)
+
+Najważniejsze pokrycie: każda granica remaining-length MQTT 3.1.1
+(0 → 268 435 455) bajt po bajcie, 5 000 losowych round-tripów
+encode→decode, 2 000 losowych fuzz round-tripów tematów/payloadów,
+5 000 śmieciowych buforów (nigdy nie rzuca), uszkodzone pakiety → `null`,
+bezpieczne dla punktów kodowych przycinanie nazwy pokoju, mapa dedup
+ograniczona przy 3 000 wstawień hurtowych, 200 000 wygenerowanych id
+wiadomości bez ani jednej kolizji.
+
+Sweep znalazł i naprawił prawdziwe bugi: pomyłkę flagi QoS vs DUP przy
+pomijaniu packet-id, przeciek payloadów poza 2-bajtową długością
+remaining-length, crash `parseRoom(null)` oraz rozcinanie par surrogatów
+w nazwach pokoi na limicie 48 znaków. Szczegóły w
+[`TEST_REPORT.md`](TEST_REPORT.md).
 
 ## Uruchomienie lokalne
 
