@@ -1,50 +1,40 @@
-# 🌐 N2 Mesh — P2P Chat
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d1117,50:1f6feb,100:39c5cf&height=140&section=header&text=N2%20Mesh&fontSize=38&fontColor=fff&desc=serverless%20P2P%20chat%20%C2%B7%20WebRTC%20%C2%B7%20zero%20dependencies&descSize=15&descAlignY=72" width="100%" />
 
-**Serverless peer-to-peer chat that runs on static hosting (GitHub Pages).**
+<div align="center">
+
+[![npm](https://img.shields.io/npm/v/n2-mesh?style=for-the-badge&logo=nodedotjs)](https://www.npmjs.com/package/n2-mesh)
+[![GHCR](https://img.shields.io/badge/GHCR-image-2496ED?style=for-the-badge&logo=docker)](https://github.com/BartoszOsiej/n2-mesh/pkgs/container/n2-mesh)
+[![Live](https://img.shields.io/badge/live-GitHub_Pages-2ea043?style=for-the-badge&logo=githubpages)](https://bartoszosiej.github.io/n2-mesh/)
+[![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
+
+**Serverless peer-to-peer chat that runs on static hosting.**
 No server, no database, no accounts — just WebRTC and a public MQTT broker
 used only for signaling.
 
-**Live: https://bartoszosiej.github.io/n2-mesh/**
+**→ [Open the live app](https://bartoszosiej.github.io/n2-mesh/)**
+
+</div>
 
 ## How it works
 
-```
-  ┌─────────────┐   WebRTC data channel   ┌─────────────┐
-  │  Peer A     │◄───────────────────────►│  Peer B     │
-  │ (your tab)  │    (direct, P2P)        │ (their tab) │
-  └──────┬──────┘                         └──────┬──────┘
-         │    SDP offer/answer/ICE via          │
-         │    public MQTT topic (signaling only) │
-         ▼                                       ▼
-   ┌─────────────────────────────────────────────────┐
-   │   Public MQTT broker (per-room topic)           │
-   │   presence + signaling + fallback for messages  │
-   └─────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    A["Peer A<br/>your tab"] <--> |"WebRTC data channel<br/>direct P2P"| B["Peer B<br/>their tab"]
+    A <-.-> |"SDP offer / answer / ICE"| M["public MQTT broker<br/>per-room topic<br/>signaling only"]
+    B <-.-> M
 ```
 
-1. **Peers announce their presence** on a per-room MQTT topic (no account,
-   public broker — the same way messengers discover each other).
-2. When two peers see each other, they exchange **WebRTC offer/answer/ICE
-   candidates** through that topic (the classic signaling-server pattern used
-   by PeerJS & co.). The broker only *introduces* peers — it never sees
-   message payloads.
-3. Once connected, chat messages travel over the **WebRTC data channel**
-   directly between browsers — real peer-to-peer.
-4. On networks that block WebRTC (mobile carrier CGNAT), messages still flow
-   through the MQTT topic as an automatic fallback. Recipients deduplicate by
-   message id, so P2P stays primary and nothing is lost.
+1. **Peers announce presence** on a per-room MQTT topic (no account)
+2. Two peers see each other → exchange **WebRTC offer/answer/ICE candidates** through that topic — the broker only *introduces* peers, it never sees message payloads
+3. Once connected, messages travel over the **WebRTC data channel** directly between browsers — real peer-to-peer
+4. On networks that block WebRTC (mobile CGNAT), messages flow through MQTT as automatic fallback; recipients deduplicate by message id
 
-### Why not WebTorrent trackers?
-
-The original build found peers through public WebTorrent WebSocket trackers
-(`tracker.webtorrent.dev`, `tracker.openwebtorrent.com`). Those trackers now
-accept announces and see the swarm, but **no longer relay WebRTC offers**
-between peers — verified live: two peers registered in the same swarm
-(`complete=2`) and zero offers ever came back. Since the browser build of
-WebTorrent can only use WebSocket trackers (no UDP/DHT in the browser), peers
-could never find each other and P2P was dead. Signaling over the MQTT relay
-keeps the app fully serverless, works today, and matches how real messengers
-do it.
+> [!NOTE]
+> **Why not WebTorrent trackers?** The original build used public WebTorrent
+> WebSocket trackers. Verified live: those trackers accept announces and see
+> the swarm (`complete=2`) but **no longer relay WebRTC offers** between peers.
+> Since browser WebTorrent can only use WebSocket trackers, P2P was dead.
+> MQTT signaling keeps the app fully serverless and matches how real messengers do it.
 
 ## Features
 
@@ -54,7 +44,8 @@ do it.
 - 🔗 Shareable room links (`#/room-name`)
 - 🌙 Dark UI, keyboard accessible, zero dependencies (no CDN, no build step)
 
-## Files
+<details>
+<summary><b>📁 Files & running locally</b></summary>
 
 | File | Purpose |
 |---|---|
@@ -62,22 +53,25 @@ do it.
 | `app.js` | Networking (WebRTC + MQTT signaling) — zero dependencies |
 | `style.css` | Dark aurora theme |
 
-## Run locally
-
 ```bash
 python3 -m http.server 8080
 # open http://localhost:8080 (and a second tab to chat with yourself)
 ```
 
-## Deploy
+Push to `main` — GitHub Actions publishes to GitHub Pages automatically.
 
-Push to `main` — GitHub Actions (`deploy.yml`) publishes the static files to
-GitHub Pages automatically.
+</details>
 
-## Security note
+> [!CAUTION]
+> Demo-grade mesh: peers must be online simultaneously. No history — when you
+> leave, the room is gone.
 
-- Messages travel **peer-to-peer** over WebRTC data channels whenever
-  possible; the MQTT broker performs signaling and is used as a fallback
-  transport on restrictive networks.
-- This is a demo-grade mesh: peers must be online simultaneously. There is no
-  history — when you leave, the room is gone.
+---
+
+<div align="center">
+
+**Part of [BartoszOsiej](https://github.com/BartoszOsiej)'s portfolio** · [Docs](https://bartoszosiej.github.io/Docs/projects/n2-mesh/)
+
+MIT © 2026 Bartosz Osiej
+
+</div>
