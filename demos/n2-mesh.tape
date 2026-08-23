@@ -1,4 +1,4 @@
-Output assets/n2-mesh-demo.svg
+Output assets/n2-mesh-demo.gif
 Set FontSize 16
 Set Width 960
 Set Height 420
