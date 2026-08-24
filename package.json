@@ -1,0 +1,13 @@
+{
+  "name": "n2-mesh",
+  "version": "1.0.0",
+  "description": "Serverless peer-to-peer chat \u2014 WebRTC + MQTT relay, no backend",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check app.js && node --check core.js"
+  },
+  "repository": {
+    "url": "https://github.com/BartoszOsiej/n2-mesh"
+  },
+  "license": "MIT"
+}
