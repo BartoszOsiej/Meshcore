@@ -2,13 +2,14 @@ name: Deploy N2 Mesh to Pages
 
 on:
   push:
+    permissions:
+      contents: write
     branches: [main]
   workflow_dispatch:
+    permissions:
+      contents: write
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+permissions: read-all
 
 concurrency:
   group: pages
@@ -16,6 +17,8 @@ concurrency:
 
 jobs:
   build:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -27,6 +30,8 @@ jobs:
           path: .
 
   deploy:
+    permissions:
+      contents: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
