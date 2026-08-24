@@ -2,12 +2,8 @@ name: Deploy N2 Mesh to Pages
 
 on:
   push:
-    permissions:
-      contents: write
     branches: [main]
   workflow_dispatch:
-    permissions:
-      contents: write
 
 permissions: read-all
 
