@@ -17,6 +17,7 @@ used only for signaling.
 
 ## Table of Contents
 
+- [Demo](#-demo)
 - [How it works](#how-it-works)
 - [Features](#features)
 - [Quick Start](#quick-start)
@@ -27,6 +28,18 @@ used only for signaling.
 - [License](#license)
 
 ---
+
+## 📺 Demo
+
+
+
+<!-- VHS auto-rendered — run: vhs demos/n2-mesh.tape -->
+
+
+
+![N2 Mesh Demo](assets/n2-mesh-demo.gif)
+
+
 
 ## How it works
 
