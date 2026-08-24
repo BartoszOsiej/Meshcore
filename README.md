@@ -5,7 +5,7 @@
 ![Docker](https://img.shields.io/badge/Docker-GHCR-2496ED?style=flat-square&logo=docker)
 ![Tests](https://img.shields.io/badge/Tests-49%2F49%20✓-brightgreen?style=flat-square)
 ![JavaScript](https://img.shields.io/badge/JS-ES2024-F7DF1E?style=flat-square&logo=javascript)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/BartoszOsiej/n2-mesh/badge)](https://securityscorecards.dev/viewer/?uri=github.com/BartoszOsiej/n2-mesh)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/BartoszOsiej/n2-mesh/badge)](https://scorecard.dev/viewer/?uri=github.com/BartoszOsiej/n2-mesh)
 
 **Serverless peer-to-peer chat that runs on static hosting (GitHub Pages).**
 No server, no database, no accounts — just WebRTC and a public MQTT broker
