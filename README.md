@@ -1,4 +1,4 @@
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d1117,50:1f6feb,100:39c5cf&height=140&section=header&text=N2%20Mesh&fontSize=38&fontColor=fff&desc=serverless%20P2P%20chat%20%C2%B7%20WebRTC%20%C2%B7%20zero%20dependencies&descSize=15&descAlignY=72" width="100%" />
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d1117,50:1f6feb,100:39c5cf&height=140&section=header&text=Meshcore&fontSize=38&fontColor=fff&desc=serverless%20P2P%20chat%20%C2%B7%20WebRTC%20%C2%B7%20zero%20dependencies&descSize=15&descAlignY=72" width="100%" />
 
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![npm](https://img.shields.io/badge/npm-n2--mesh-blue?style=flat-square&logo=nodedotjs)
