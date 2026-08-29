@@ -1,5 +1,5 @@
 {
-  "name": "meshcore",
+  "name": "n2-mesh",
   "version": "1.0.0",
   "description": "Serverless peer-to-peer chat \u2014 WebRTC + MQTT relay, no backend",
   "scripts": {
