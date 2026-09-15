@@ -11,7 +11,7 @@
 No server, no database, no accounts — just WebRTC and a public MQTT broker
 used only for signaling.
 
-> 🇵🇱 [Wersja polska](README.pl.md) · [Documentation](https://bartoszosiej.github.io/Docs/projects/n2-mesh/) · [Live Demo](https://bartoszosiej.github.io/n2-mesh/)
+> 🇵🇱 [Wersja polska](README.pl.md) · [Documentation](https://bartoszosiej.github.io/Docs/projects/n2-mesh/) · [Live Demo](https://bartoszosiej.github.io/Meshcore/)
 
 ---
 

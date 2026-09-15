@@ -4,7 +4,7 @@
 Bez serwera, bez bazy danych, bez kont — wystarczy WebRTC i publiczny broker
 MQTT używany tylko do sygnalizacji.
 
-**Na żywo: https://bartoszosiej.github.io/n2-mesh/**
+**Na żywo: https://bartoszosiej.github.io/Meshcore/**
 
 ## Jak to działa
 
