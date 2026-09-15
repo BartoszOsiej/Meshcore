@@ -159,3 +159,29 @@ test('parseRoom strips the leading slash and keeps inner ones', () => {
   assert.strictEqual(C.parseRoom('a/b'), 'a/b');
   assert.strictEqual(C.parseRoom('#/'), 'lobby');
 });
+
+/* ── trimHistory (persistent scrollback) ── */
+
+test('trimHistory keeps the last N entries and drops junk', () => {
+  const msgs = [{ u: 'a', t: '1' }, null, 'junk', { u: 'b', t: '2' }, { u: 'c', t: '3' }];
+  const out = C.trimHistory(msgs, 2);
+  assert.deepStrictEqual(out, [{ u: 'b', t: '2' }, { u: 'c', t: '3' }]);
+});
+
+test('trimHistory with no cap returns all clean entries', () => {
+  const msgs = [{ u: 'a', t: '1' }, { u: 'b', t: '2' }];
+  assert.deepStrictEqual(C.trimHistory(msgs, -1), msgs);
+});
+
+test('trimHistory handles non-array input', () => {
+  assert.deepStrictEqual(C.trimHistory(null, 10), []);
+  assert.deepStrictEqual(C.trimHistory(undefined, 10), []);
+  assert.deepStrictEqual(C.trimHistory('nope', 10), []);
+});
+
+test('trimHistory does not mutate the input', () => {
+  const msgs = [{ u: 'a', t: '1' }, { u: 'b', t: '2' }];
+  const copy = msgs.slice();
+  C.trimHistory(msgs, 1);
+  assert.deepStrictEqual(msgs, copy);
+});
