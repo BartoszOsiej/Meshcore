@@ -45,6 +45,17 @@
     return true;
   }
 
+  /* Trim a chat-history array to the last `max` entries, dropping
+   * everything non-object. Returns a NEW array; the input is untouched.
+   * Used to cap per-room scrollback persisted to localStorage. */
+  function trimHistory(messages, max) {
+    if (!Array.isArray(messages)) return [];
+    const clean = messages.filter(function (m) {
+      return m && typeof m === 'object';
+    });
+    return max >= 0 ? clean.slice(-max) : clean;
+  }
+
   /* Normalise a location hash into a room name: strip `#/`, lowercase,
    * cap at 48 chars, default to 'lobby'. The cap is applied per Unicode
    * code point (not UTF-16 code unit) so astral chars like 🚀 are never
@@ -150,6 +161,7 @@
     newMid,
     isNewMid,
     parseRoom,
+    trimHistory,
     mqttRemainingLengthBytes,
     mqttRemainingLength,
     mqttEncode,

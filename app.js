@@ -97,7 +97,41 @@ const state = {
   relay: { ws: null, connected: false, brokerIdx: 0, retry: 0, queue: [], presenceTimer: null },
   /* Message ids already seen — dedup across P2P / relay / BroadcastChannel. */
   seen: new Map(),
+  /* Messages rendered this session, keyed per room — persisted to
+   * localStorage so scrollback survives reloads. */
+  history: {},
 };
+
+/* Per-room scrollback cap. */
+const HISTORY_MAX = 100;
+
+/* Persist the current room's history (best-effort; quota errors ignored). */
+function saveHistory() {
+  try {
+    state.history[state.room] = C.trimHistory(state.history[state.room], HISTORY_MAX);
+    localStorage.setItem('n2mesh:history', JSON.stringify(state.history));
+  } catch (_) {}
+}
+
+/* Load persisted scrollback for `room` and render it. */
+function loadHistory(room) {
+  let saved = [];
+  try {
+    saved = C.trimHistory(JSON.parse(localStorage.getItem('n2mesh:history') || '{}')[room], HISTORY_MAX);
+  } catch (_) {}
+  state.history[room] = saved;
+  for (const m of saved) addMessage(m.u, m.t, m.ts, false);
+  if (saved.length > 0) {
+    addSystem(`Restored ${saved.length} message${saved.length === 1 ? '' : 's'} from history.`);
+  }
+}
+
+/* Append a message to the persisted room history. */
+function recordHistory(msg) {
+  if (!Array.isArray(state.history[state.room])) state.history[state.room] = [];
+  state.history[state.room].push(msg);
+  saveHistory();
+}
 
 /* ── Tiny helpers ───────────────────────────────────────────
  * Pure logic (bytes, ids, dedup, MQTT packets, room parsing) lives in
@@ -119,6 +153,7 @@ function addMessage(nick, text, ts, self) {
   const chat = $('chat');
   const welcome = $('welcome');
   if (welcome) welcome.remove();
+  if (!self) recordHistory({ u: nick, t: text, ts: ts || Date.now() });
 
   const el = document.createElement('div');
   el.className = 'msg' + (self ? ' self' : '');
@@ -494,6 +529,10 @@ function joinRoom(room) {
   const oldRoom = state.room;
   state.room = room;
   location.hash = '/' + room;
+  /* Fresh room → clear the DOM chat, then restore this room's scrollback. */
+  const chat = $('chat');
+  chat.replaceChildren();
+  loadHistory(room);
   addSystem(`Switching to room “${room}” — reloading swarm…`);
   /* Invalidate everything async from the old room. */
   state.session++;
@@ -558,6 +597,7 @@ function boot() {
   });
 
   initClient();
+  loadHistory(state.room);
 }
 
 boot();
